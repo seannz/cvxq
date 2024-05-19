@@ -16,12 +16,15 @@ model_ids = [
 ]
 
 batchsize = 1
-numbatches = 4
+numbatches = 64
 blocksize = 2048
 stride = 64
-loglambda = -16
-model_id = model_ids[5]
-model = ModuleQ(AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float16)).cuda()
+length = 512
+loglambda = -18
+bitrates = [3.0, 4.0]
+model_id = model_ids[6]
+checkpointing = True
+model = ModuleQ(AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float16), checkpointing=checkpointing).cuda()
 tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False)
 
 calibdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
@@ -29,10 +32,10 @@ calibdata = tokenizer("\n\n".join(calibdata['text']), return_tensors='pt').input
 calibdata = torch.cat(calibdata.split(blocksize, 1)[:-1]) #need a DataLoader
 calibembd = model.embed_tokens(calibdata).detach().requires_grad_(True)
 
-optimizer = Optimizer(model, calibembd, calibdata, numbatches, batchsize=batchsize, stride=stride, 
-                      loglambda=loglambda, model_id=model_id, save_file=model_id.replace("/","-") + "-new_gradsq%02d_64_fp16.mat")
+optimizer = Optimizer(model, calibembd, calibdata, numbatches, batchsize=batchsize, stride=stride, length=length,
+                      loglambda=loglambda, bitrates=bitrates, model_id=model_id, save_file=model_id.replace("/","-") + "-grads-checkpointing.pt")
 optimizer.calibrate()
 
 # compute the perplexity and bit-rate at a lambda
-optimizer.optimize(-18)
+optimizer.optimize()
 optimizer.validate()

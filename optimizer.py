@@ -1,93 +1,123 @@
+import math
 import torch
-from torch.nn import Module, Linear, Identity
+from torch.nn import Module
 from torch.nn.functional import mse_loss, cross_entropy
-
 from tqdm import tqdm
-from scipy.io import savemat, loadmat
 
 class Optimizer(Module):
-    def __init__(self, model, data, labels, batches, batchsize=1, stride=1, loglambda=-18, model_id="unknown", load_file=None, save_file=None) -> None:
+    def __init__(self, model, data, labels, batches, batchsize=1, stride=1, length=384, loglambda=-18, bitrates=[3,4], model_id="unknown", load_file=None, save_file=None) -> None:
         super().__init__()
         self.model = model
         self.model_id = "_".join(model_id.split("/"))
         self.loglambda = loglambda
+        self.bitrates = bitrates
         self.data = data
         self.labels = labels
         self.batches = batches
         self.batchsize = batchsize
         self.stride = stride
+        self.length = length
         self.load_file = load_file
         self.save_file = save_file
 
+        self.project()
+
         if self.load_file is None: #
             return
-
-        for i in range(len(self.model.layers)):
-            gradsq = torch.as_tensor(loadmat(self.load_file % i)['gradsq'], device=self.model.device)
-            self.model.layers[i][1].gradsq = gradsq
+        
+        self.load_vars()
 
     def calibrate(self):
         # backward call to populate the grad squared
         self.model.add_hooks()
         for b in range(0, self.batches, self.batchsize):
-            self.model.unquantize_all()
+            # self.unquantize_all()
             for t in tqdm(list(reversed(range(0,self.data.shape[-2],self.stride)))):
-                output = self.model(self.data[b:b+self.batchsize,:t+1]) #.logits
-                for s in range(output.logits.shape[-1]):
-                    # self.model.zero_grad()
-                    output.logits[:,t,s].sum().backward(retain_graph = True)
-                del output
+                output = torch.einsum('ij,bkj->bki', self.V, self.model(self.data[b:b+self.batchsize,:t+1]).logits)
+                for s in tqdm(range(output.shape[-1]), leave=False):
+                    output[:,t,s].sum().backward(retain_graph = True)
 
-            self.optimize(self.loglambda, b + self.batchsize)
-            self.validate()
+            # self.quantize_all(self.loglambda, b + self.batchsize)
+            for rate in self.bitrates:
+                self.optimize(rate)
+                self.validate()
+
+            self.optimize(4.0)
+
+            if self.save_file is None:
+                continue
+            
+            self.save_vars()
 
         self.model.remove_hooks()
 
-        if self.save_file is None:
-            return
+    def optimize(self, bitrate=None, log2_init=-18, lr=0.8):
+        if bitrate is None:
+            bitrate = self.bitrates[0]
 
-        for i in range(len(self.model.layers)):
-            savemat(self.save_file % i, {"gradsq": self.model.layers[i][1].gradsq.detach_().cpu().numpy(),
-                                         "weight": self.model.layers[i][1].linear.weight.detach_().cpu().numpy()})
+        log2_lambda = log2_init
+        self.quantize_all(log2_lambda)
+        bitrate_curr = self.model.bitrate()
 
+        iters = 0
+        while abs(bitrate_curr - bitrate) > 1e-6 and iters < 10:
+            log2_lambda -= 2 * (bitrate - bitrate_curr) * lr
+            self.quantize_all(log2_lambda)
+            bitrate_curr = self.model.bitrate()
+            iters += 1
+
+        return log2_lambda, bitrate_curr
+
+    def project(self):
+        output = torch.empty(self.data.shape, device=self.data.device, dtype=torch.double)
+
+        self.unquantize_all()
+        with torch.no_grad():
+            for b in range(0, self.data.shape[0], self.batchsize):
+                output[b:b+self.batchsize] = self.model(self.data[b:b+self.batchsize]).logits
+
+        self.V = torch.linalg.eig(torch.einsum('bji,bjk->ik', output, output))[1].T[:self.length].real.half()
+        
     def validate(self):
         losses = 0
         with torch.no_grad():
-            for b in range(0, self.data.shape[0], self.batchsize):
+            for b in tqdm(range(0, self.data.shape[0], self.batchsize)):
                 logits = self.model.lm_head(self.model(self.data[b:b+self.batchsize]).logits)[:,:-1].flatten(0,1)
                 labels = self.labels[b:b+self.batchsize,1:].flatten(0,1)
                 losses = losses + cross_entropy(logits.float(), labels, reduction='none').sum()
 
         ppl = torch.exp(losses / (self.data.shape[0] * (self.data.shape[1] - 1)))
         bit = self.model.bitrate()
-        print("perplexity: %f, bitrate: %f" % (ppl, bit))
+        zer = self.model.numzero()
+        print("perplexity: %f, bitrate: %f, numzero: %f" % (ppl, bit, zer))
 
         return ppl, bit
 
-    def optimize(self, log2lam, numsq=None):
-        numsq = self.batches if numsq is None else numsq
-        # optimize bit depths for a given lambda
-        with torch.no_grad():
-            for i in range(len(self.model.layers)):
-                weight = torch.stack([self.model.layers[i][1].gradsq * (1/numsq), self.model.layers[i][1].linear.weight.float().square()])
+    def unquantize_all(self):
+        self.model.unquantize_all()
 
-                depth0 = weight.mean(1, keepdims=True).log2_().sum(0).subtract_(log2lam).multiply_(0.5)
-                depth1 = weight.mean(2, keepdims=True).log2_().sum(0).subtract_(log2lam).multiply_(0.5)
-                depths = depth0 + depth1
-                depthm = (2 ** (2 * depth0) + 2 ** (2 * depth1)).multiply_(0.5).log2_().multiply_(0.5)
-                depth2 = depths.subtract_(depthm)
+    def quantize_all(self, log2_lambda=None, batches=None):
+        batches = self.batches if batches is None else batches
+        log2_lambda = self.loglambda if log2_lambda is None else log2_lambda
 
-                steps0 = weight[1].mean(0, keepdims=True).log2_().multiply_(0.5)
-                steps1 = weight[1].mean(1, keepdims=True).log2_().multiply_(0.5)
-                stepss = steps0 + steps1
-                stepsm = (2 ** (2 * steps0) + 2 ** (2 * steps1)).multiply_(0.5).log2_().multiply_(0.5)
-                steps2 = stepss.subtract_(stepsm)
+        self.model.quantize_all(log2_lambda + math.log2(batches))
 
-                # self.model.layers[i][1].bit_depth[:,:] = depth2.floor().add_(depth2.frac_().gt_(0.44313)).clamp_(0)
-                self.model.layers[i][1].bit_depth[:,:] = depth2.round_().clamp_(0)
-                self.model.layers[i][1].step_size[:,:] = steps2 # depths.subtract_(depthm).round_().clamp_(0)
+    def load_vars(self):
+        data = torch.load(self.load_file)
+        for i in range(len(self.model.layers)):
+            self.model.layers[i][1].grad_sq0 = data["%02d_grad_sq0" % i].to(self.device)
+            self.model.layers[i][1].grad_sq1 = data["%02d_grad_sq1" % i].to(self.device)
+            self.model.layers[i][1].weight_0 = data["%02d_weight_0" % i].to(self.device)
+            self.model.layers[i][1].weight_1 = data["%02d_weight_1" % i].to(self.device)
 
-        self.model.quantize_all()
+    def save_vars(self):
+        data = dict()
+        for i in range(len(self.model.layers)):
+            data["%02d_grad_sq0" % i] = self.model.layers[i][1].grad_sq0.detach_().cpu()
+            data["%02d_grad_sq1" % i] = self.model.layers[i][1].grad_sq1.detach_().cpu()
+            data["%02d_weight_0" % i] = self.model.layers[i][1].weight_0.detach_().cpu()
+            data["%02d_weight_1" % i] = self.model.layers[i][1].weight_1.detach_().cpu()
+        torch.save(data, self.save_file)
 
     @property
     def device(self):
