@@ -1,41 +1,23 @@
+# import os
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from datasets import load_dataset
-from quantizer import ModuleQ
+
+from torch.utils.data import DataLoader
+from transformers import AutoModelForCausalLM #, AutoTokenizer
 from optimizer import Optimizer
+from options import parse_args
+from dataset import wikitext
 
-model_ids = [
-    "facebook/opt-125m",
-    "facebook/opt-350m",
-    "facebook/opt-1.3b",
-    "facebook/opt-2.7b",
-    "facebook/opt-6.7b",
-    "facebook/opt-13b",
-    "facebook/opt-30b",
-    # See all OPT models at https://huggingface.co/models?filter=opt
-]
+args = parse_args()
+model = AutoModelForCausalLM.from_pretrained(args.model_id, torch_dtype=torch.float16)
 
-batchsize = 1
-numbatches = 64
-blocksize = 2048
-stride = 64
-length = 512
-loglambda = -18
-bitrates = [3.0, 4.0]
-model_id = model_ids[6]
-checkpointing = True
-model = ModuleQ(AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float16), checkpointing=checkpointing).cuda()
-tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False)
+train_data, valid_data, tests_data = wikitext(model_id=args.model_id)
+train_loader = DataLoader(train_data, pin_memory=True)
+# valid_loader = DataLoader(train_data, pin_memory=True)
+tests_loader = DataLoader(tests_data, pin_memory=True)
 
-calibdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
-calibdata = tokenizer("\n\n".join(calibdata['text']), return_tensors='pt').input_ids.cuda()
-calibdata = torch.cat(calibdata.split(blocksize, 1)[:-1]) #need a DataLoader
-calibembd = model.embed_tokens(calibdata).detach().requires_grad_(True)
-
-optimizer = Optimizer(model, calibembd, calibdata, numbatches, batchsize=batchsize, stride=stride, length=length,
-                      loglambda=loglambda, bitrates=bitrates, model_id=model_id, save_file=model_id.replace("/","-") + "-grads-checkpointing.pt")
+optimizer = Optimizer(model, train_loader, tests_loader, args.numbatches, stride=args.stride, pca=args.pca,
+                      loglambda=args.log_lambda, bitrate=args.bitrate, checkpointing=args.checkpointing, save_file=args.model_id.replace("/","-") + "-grads-checkpointing.pt")
+# breakpoint()
+# optimizer.validate()
+optimizer.transform()
 optimizer.calibrate()
-
-# compute the perplexity and bit-rate at a lambda
-optimizer.optimize()
-optimizer.validate()
