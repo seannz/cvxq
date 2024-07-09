@@ -20,10 +20,11 @@ tests_loader2 = DataLoader(tests_data2, pin_memory=True)
 
 tests_loaders = [tests_loader1, tests_loader2]
 
-optimizer = Optimizer(model, train_loader, tests_loaders, args.numbatches, args.batch_size, stride=args.stride, groups=args.groups, pca=args.pca,
-                      loglambda=args.log_lambda, bitrate=args.bitrate, checkpointing=args.checkpointing, save_file=args.model_id.replace("/","-") + "-grads-checkpointing.pt")
-# breakpoint()
-# optimizer.validate()
+optimizer = Optimizer(model, train_loader, tests_loaders, args.numbatches, args.batch_size, stride=args.stride, groups=args.groups, pca=args.pca, gpus=args.gpus,
+                      loglambda=args.log_lambda, bitrate=args.bitrate, dropout=args.dropout, checkpointing=args.checkpointing, save_file=args.model_id.replace("/","-") + "-grads-checkpointing.pt")
+
 optimizer.summarize()
 optimizer.transform()
+
+optimizer.validate()
 optimizer.calibrate()
