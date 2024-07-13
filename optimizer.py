@@ -25,7 +25,10 @@ class Optimizer(Module):
         self.curr_iter = 0
         self.dropout = dropout
         self.max_iters = max_iters if max_iters is not None else len(self.train_loader)
-        # self.optrate = bitrate
+        self.best_ppls = [None] * len(tests_loaders)
+        self.pca_index = 0
+        self.pca_reset_after = 10
+        self.pca_reset_tol = 2e-2
 
         if self.load_file is None: #
             return
@@ -39,31 +42,24 @@ class Optimizer(Module):
             self.model.add_backward_hooks()
 
             embeds = self.model.embed_tokens(data.to(self.model.device)).requires_grad_(True)
-            output = torch.einsum('ij,bkj->bki', self.V, self.model(embeds).logits)
-            # output = self.model(embeds).logits
+            output = torch.einsum('ij,bkj->bki', self.V, self.model(embeds).logits) # - logits.mean(2, keepdim=True))
+
             self.model.remove_forward_hooks()
 
             self.model.scale_sq()
             for t in tqdm(range(0, output.shape[-2], self.stride)):
-                output[:,t, self.curr_iter % self.pca].sum().backward(retain_graph = True)
+                output[:,t, self.pca_index % self.pca].sum().backward(retain_graph = True)
             del embeds, output
 
             self.model.remove_backward_hooks()
-
             self.model.update_offsets()
 
+            self.pca_index += 1
             self.curr_iter += 1
+
             if self.curr_iter % self.batch_size == 0:
-                self.optimize(self.bitrate, skip=self.curr_iter // self.batch_size % 2, stride=2)
+                self.optimize(self.bitrate) #, skip=self.curr_iter // self.batch_size % 2, stride=2)
                 self.validate()
-
-                # self.optrate -= 0.25 * (self.optrate - self.bitrate) #max(self.bitrate, self.optrate - 0.05)
-
-            # if self.curr_iter % 128 == 0:
-            #     self.bitrate -= 0.5
-            #     self.clearvar()
-            #     # self.quantize_all(self.loglambda, self.dropout)
-            #     # self.optimize(self.bitrate, iters=1, dropin=0.01) # + max(0, 1 - self.curr_iter / self.max_iters))
 
             gc.collect()
             torch.cuda.empty_cache()
@@ -112,8 +108,10 @@ class Optimizer(Module):
                 covars += torch.einsum('bji,bjk->ik', output, output).multiply_(1 / self.train_loader.dataset.blocksize)
 
         covars -= means.reshape(-1,1) @ means.reshape(1,-1)
+        eigenv = torch.linalg.eig(covars)[1].T[:self.pca].real #.to(embeds.dtype)
+        # offset = torch.ones_like(eigenv[0:1]) * (1 / math.sqrt(eigenv[0].numel()))
 
-        self.V = torch.linalg.eig(covars)[1].T[:self.pca].real.to(embeds.dtype)
+        self.V = torch.cat([eigenv]).to(embeds.dtype).contiguous()
 
     def validate(self):
         ppls = []
@@ -132,11 +130,25 @@ class Optimizer(Module):
         bit = self.model.bitrate()
         lam = self.model.log2lam()
         zer = self.model.numzero()
-        print("iterations: %03d, perplexity: %f, %f, lambda: %f, bitrate: %f, numzero: %f, dropout: %f" % (self.curr_iter, ppls[0], ppls[1], lam, bit, zer, self.dropout))
+        print("iterations: %03d, perplexity: %f, %f, lambda: %f, bitrate: %7.4f, numzero: %f, dropout: %f" % (self.curr_iter, ppls[0], ppls[1], lam, bit, zer, self.dropout))
         # breakpoint()
+        # self.reset_on_plateau(ppls)
 
-        return ppls, bit, zer
+    def reset_on_plateau(self, ppls):
+        if self.curr_iter == 0:
+            return
 
+        if self.best_ppls[0] is None or self.best_ppls[0] > ppls[0]:
+            self.best_iter = self.curr_iter
+            self.best_ppls[:] = ppls[:]
+
+        if self.best_ppls[0] - self.pca_reset_tol < ppls[0] and self.curr_iter - self.best_iter >= self.pca_reset_after * self.batch_size:
+            self.pca_index = 0
+            self.pca_reset_after *= 2
+            self.best_iter = self.curr_iter
+            self.best_ppls[:] = ppls[:]
+            print("resetting pca index to 0")
+            
     def summarize(self):
         print(self.model)
 
@@ -163,8 +175,7 @@ class Optimizer(Module):
         for i in range(len(self.model.layers)):
             # data["%02d_grad_sq0" % i] = self.model.layers[i][1].grad_sq0.detach_().cpu()
             data["%02d_grad_sq1" % i] = self.model.layers[i][1].grad_sq1.detach_().cpu()
-            # data["%02d_weight_0" % i] = self.model.layers[i][1].weight_0.detach_().cpu()
-            data["%02d_weight_1" % i] = self.model.layers[i][1].weight_1.detach_().cpu()
+
         torch.save(data, self.save_file)
 
     @property

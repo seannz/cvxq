@@ -37,7 +37,7 @@ class LinearQ(Quantizer):
         self.linear = linear
         self.count_fw = 0
         self.count_bw = 0
-        self.count_qt = 0
+        # self.count_qt = 0
         self.groups = groups
         self.name = name
         # self.dropin = dropin
@@ -58,7 +58,7 @@ class LinearQ(Quantizer):
         # self.register_buffer('step_sizep', torch.zeros([groups, 1, linear.weight.shape[1]], dtype=linear.bias.dtype))
         # self.register_buffer('step_sizem', torch.zeros([groups, 1, linear.weight.shape[1]], dtype=linear.bias.dtype))
 
-        self.register_buffer('bit_depth1', torch.zeros([groups, 1, linear.weight.shape[1]], dtype=linear.bias.dtype))
+        # self.register_buffer('bit_depth1', torch.zeros([groups, 1, linear.weight.shape[1]], dtype=linear.bias.dtype))
         self.register_buffer('bit_depth2', torch.zeros([groups, 1, linear.weight.shape[1]], dtype=linear.bias.dtype))
         # self.register_buffer('bit_depth3', torch.zeros([linear.weight.shape[0], groups, 1], dtype=linear.bias.dtype))
 
@@ -69,8 +69,8 @@ class LinearQ(Quantizer):
 
     def scale_sq(self) -> None:
         self.count_bw += 1
-        self.grad_sq0 *= 1 - (1/self.count_bw)
-        self.grad_sq2 *= 1 - (1/self.count_bw)
+        self.grad_sq0 *= 1 - (1/(self.count_bw))
+        self.grad_sq2 *= 1 - (1/(self.count_bw))
 
     # def clearvar(self):
     #     self.grad_sqr.zero_()
@@ -98,13 +98,12 @@ class LinearQ(Quantizer):
         weight = self.linear.weight[groups]
         offset = torch.median(weight, 1, keepdim=True).values
 
-        self.count_qt += 1
-        bit_depth = self.bit_depth1.add_((1/min(2,self.count_qt)) * (self.bit_depth2 - self.bit_depth1)).round().float()
-        # bit_depth = self.bit_depth2.round().float() #1.add_((1/self.count_qt) * (self.bit_depth2 - self.bit_depth1)).round().float()
-        #self.bit_depth((weight - offset).float()) #.float())
-        step_size = self.step_size((weight - offset).float()) #self.step_sizep.where(quants.gt(0), self.step_sizem).float()
-        # if (2. ** step_size).eq(0).any():
-        #     breakpoint()
+        # self.count_qt += 1
+        # bit_depth = self.bit_depth1.add_((1/self.count_qt) * (self.bit_depth2 - self.bit_depth1)).round().float()
+        bit_depth = self.bit_depth2.round().float() #1.add_((1/self.count_qt) * (self.bit_depth2 - self.bit_depth1)).round().float()
+
+        step_size = self.step_size((weight - offset).float())
+
         quants = Laplace(offset, (3/1.414213562) * 2. ** step_size).cdf(weight).multiply_(2. ** bit_depth)
         quants = quants.floor_().clamp_(None, 2. ** bit_depth - 1).add_(0.5)
         quants = Laplace(offset, (3/1.414213562) * 2. ** step_size).icdf(quants.multiply_(2. **-bit_depth))
@@ -150,15 +149,15 @@ class LinearQ(Quantizer):
         input_av = self.layer_in # torch.flatten(self.layer_in, 0, 1)
 
         self.count_fw += 1
-        self.input_av += (1/self.count_fw) * (input_av.mean(0, True, dtype=torch.float).subtract_(self.input_av))
+        self.input_av += (1/(self.count_fw)) * (input_av.mean(0, True, dtype=torch.float).subtract_(self.input_av))
 
     def backward_hook(self, module, grad_in, grad_out) -> None:
         self.grad_out = grad_out[0].detach().squeeze()
         grad_sqr = torch.einsum("ij,ik->jk", self.grad_out, self.layer_in).float().square()
 
-        self.grad_sq0 += (1/self.count_bw) * grad_sqr.mean(1, True, dtype=torch.float)
+        self.grad_sq0 += (1/(self.count_bw)) * grad_sqr.mean(1, True, dtype=torch.float)
         # self.grad_sq1 += (1/self.count_bw) * grad_sqr.mean(0, True, dtype=torch.float)
-        self.grad_sq2 += (1/self.count_bw) * grad_sqr[self.groups_2].mean(1, True, dtype=torch.float)
+        self.grad_sq2 += (1/(self.count_bw)) * grad_sqr[self.groups_2].mean(1, True, dtype=torch.float)
 
         if self.grad_out.isnan().any():
             breakpoint()
