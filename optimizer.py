@@ -4,31 +4,34 @@ import torch
 from itertools import cycle
 from torch.nn import Module
 from torch.nn.functional import cross_entropy
+from accelerate import Accelerator
 from tqdm import tqdm
 
 from quantizer import ModuleQ
 
 class Optimizer(Module):
-    def __init__(self, model, train_loader, tests_loaders, batches, batch_size, stride=1, groups=1, pca=384, loglambda=-18, bitrate=3, max_iters=1000, dropout=0, checkpointing=False, gpus=1, load_file=None, save_file=None) -> None:
+    def __init__(self, model, train_loader, tests_loaders, batches, batch_size, valid_size=16, stride=1, group_size=-1, warmup_batches=2, pca=384, loglambda=-18, bitrate=3, max_iters=1000, rand_p=0.5, checkpointing=False, gpus=1, load_file=None, save_file=None) -> None:
         super().__init__()
-        self.model = ModuleQ(model, groups=groups, checkpointing=checkpointing, gpus=gpus)
+        self.model = ModuleQ.create(model, group_size=group_size, checkpointing=checkpointing, gpus=gpus)
         self.loglambda = loglambda
         self.bitrate = bitrate
         self.train_loader = train_loader
         self.tests_loaders = tests_loaders
         self.batches = batches
         self.batch_size = batch_size
+        self.valid_size = valid_size
         self.stride = stride
         self.pca = pca
         self.load_file = load_file
         self.save_file = save_file
-        self.curr_iter = 0
-        self.dropout = dropout
-        self.max_iters = max_iters if max_iters is not None else len(self.train_loader)
+        self.curr_iter = 0 # -warmup_batches * batch_size
+        self.rand_p = rand_p
+        self.max_iters = max_iters # if max_iters is not None else len(self.train_loader)
         self.best_ppls = [None] * len(tests_loaders)
         self.pca_index = 0
         self.pca_reset_after = 10
         self.pca_reset_tol = 2e-2
+        self.accelerator = Accelerator()
 
         if self.load_file is None: #
             return
@@ -36,19 +39,21 @@ class Optimizer(Module):
         self.load_vars()
 
     def calibrate(self):
-        # self.model.add_hooks_dbg()
         for data in cycle(self.train_loader):
             self.model.add_forward_hooks()
             self.model.add_backward_hooks()
 
             embeds = self.model.embed_tokens(data.to(self.model.device)).requires_grad_(True)
-            output = torch.einsum('ij,bkj->bki', self.V, self.model(embeds).logits) # - logits.mean(2, keepdim=True))
+            output = torch.einsum('ij,bkj->bki', self.V, self.model(embeds).logits.to(embeds.dtype)) # - logits.mean(2, keepdim=True))
+            # print(output.float().sum())
 
             self.model.remove_forward_hooks()
 
             self.model.scale_sq()
-            for t in tqdm(range(0, output.shape[-2], self.stride)):
-                output[:,t, self.pca_index % self.pca].sum().backward(retain_graph = True)
+            # for t in tqdm(range(0, output.shape[-2] + 1, self.stride)):
+            for t in tqdm(torch.arange(0, output.shape[-2], self.stride - self.stride / output.shape[-2]).int()):
+                # self.accelerator.backward(output[:, t, self.pca_index % min(output.shape[-1], self.pca)].sum(), retain_graph = True)
+                output[:, t, self.pca_index % min(output.shape[-1], self.pca)].sum().backward(retain_graph = True)
             del embeds, output
 
             self.model.remove_backward_hooks()
@@ -57,21 +62,33 @@ class Optimizer(Module):
             self.pca_index += 1
             self.curr_iter += 1
 
+            # if self.curr_iter >= 0:
             if self.curr_iter % self.batch_size == 0:
-                self.optimize(self.bitrate) #, skip=self.curr_iter // self.batch_size % 2, stride=2)
+                self.optimize(self.bitrate, regroup=True) #self.curr_iter % 1 * self.batch_size == 0)
+                self.quantize_all(self.loglambda, grid_search=False) #self.curr_iter > 2 * self.batch_size) #, rand_p=self.rand_p)
+                self.model.update_offsets()
+
+            if self.curr_iter % self.valid_size == 0:
+                self.quantize_all(self.loglambda, grid_search=True) #self.curr_iter > 2 * self.batch_size) #, rand_p=self.rand_p)
+                self.model.update_offsets()
                 self.validate()
+
+
+                # self.quantize_all(self.loglambda) # , rand_p=self.rand_p)
+                # self.model.update_offsets()
 
             gc.collect()
             torch.cuda.empty_cache()
+
+            if self.curr_iter >= self.max_iters:
+                break
 
         if self.save_file is None:
             return
             
         self.save_vars()
 
-        # self.model.remove_hooks()
-
-    def optimize(self, bitrate, lr=1.9, iters=10, skip=0, stride=1):
+    def optimize(self, bitrate, regroup=False, lr=1.9, iters=10):
         # dual ascent 
         loglambda = self.loglambda #log2_init
         bitrate_curr = bitrate #self.bitrate if bitrate is None else bitrate
@@ -79,13 +96,12 @@ class Optimizer(Module):
         for i in range(iters):
             loglambda += lr * (bitrate_curr - bitrate)
             # self.quantize_all(loglambda, skip, stride)
-            self.optimize_all(loglambda)
+            self.optimize_all(loglambda, regroup=regroup)
             bitrate_curr = self.model.bitrate()
-            # print("optimize iteration %02d, loglambda: %f, bitrate: %f," % (i, loglambda, bitrate_curr))
 
-        self.quantize_all(loglambda, skip, stride)
+        # self.quantize_all(loglambda)
         self.loglambda = loglambda # log2_lambda
-        self.model.update_offsets()
+        # self.model.update_offsets()
 
         return loglambda, bitrate_curr
 
@@ -114,13 +130,17 @@ class Optimizer(Module):
         self.V = torch.cat([eigenv]).to(embeds.dtype).contiguous()
 
     def validate(self):
+        # loglambda = self.loglambda
+        # self.quantize_all(loglambda)
+        # self.model.update_offsets()
+
         ppls = []
         for tests_loader in self.tests_loaders:
             with torch.no_grad():
                 losses = 0
                 for data in tests_loader: #self.tests_loaders[0]:
                     embeds = self.model.embed_tokens(data.to(self.model.device))
-                    logits = self.model.lm_head(self.model(embeds).logits)[:,:-1].flatten(0,1)
+                    logits = self.model.lm_head(self.model(embeds).logits.to(embeds.dtype))[:,:-1].flatten(0,1)
                     labels = data[:,1:].to(logits.device).flatten(0,1)
                     losses += cross_entropy(logits.float(), labels, reduction='none').sum()
 
@@ -130,7 +150,7 @@ class Optimizer(Module):
         bit = self.model.bitrate()
         lam = self.model.log2lam()
         zer = self.model.numzero()
-        print("iterations: %03d, perplexity: %f, %f, lambda: %f, bitrate: %7.4f, numzero: %f, dropout: %f" % (self.curr_iter, ppls[0], ppls[1], lam, bit, zer, self.dropout))
+        print("iterations: %03d, perplexity: %f, %f, lambda: %f, bitrate: %7.4f, numzero: %f" % (self.curr_iter, ppls[0], ppls[1], lam, bit, zer))
         # breakpoint()
         # self.reset_on_plateau(ppls)
 
@@ -155,13 +175,13 @@ class Optimizer(Module):
     def unquantize_all(self):
         self.model.unquantize_all()
 
-    def optimize_all(self, log2_lambda):
-        self.model.optimize_all(log2_lambda)
+    def optimize_all(self, log2_lambda, regroup=False):
+        self.model.optimize_all(log2_lambda, regroup=regroup)
 
-    def quantize_all(self, log2_lambda, skip=0, stride=1): #, batches=None):
+    def quantize_all(self, log2_lambda, grid_search=False): #, batches=None):
         # batches = self.batches if batches is None else batches
         # log2_lambda = self.loglambda if log2_lambda is None else log2_lambda
-        self.model.quantize_all(log2_lambda, skip=skip, stride=stride) # + math.log2(batches))
+        self.model.quantize_all(log2_lambda, grid_search=grid_search) # + math.log2(batches))
 
     def load_vars(self):
         data = torch.load(self.load_file)
@@ -178,10 +198,10 @@ class Optimizer(Module):
 
         torch.save(data, self.save_file)
 
-    @property
-    def config(self):
-        return self.model.config
+    # @property
+    # def config(self):
+    #     return self.model.config
 
-    @property
-    def device(self):
-        return self.model.device
+    # @property
+    # def device(self):
+    #     return self.model.device
