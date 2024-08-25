@@ -1,7 +1,7 @@
 import torch
 
 from torch.utils.data import DataLoader
-from transformers import AutoModelForCausalLM, AutoConfig #, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
 from huggingface_hub import login
 from optimizer import Optimizer
 from options import parse_args
@@ -38,11 +38,11 @@ tests_loader2 = DataLoader(tests_data2, pin_memory=True)
 
 tests_loaders = [tests_loader1, tests_loader2]
 
-optimizer = Optimizer(model, train_loader, tests_loaders, args.numbatches, args.batch_size, valid_size=args.valid_size, warmup_batches=args.warmup_batches, stride=args.stride, group_size=args.group_size, pca=args.pca, gpus=args.gpus,
-                      loglambda=args.log_lambda, bitrate=args.bitrate, max_iters=args.max_iters, checkpointing=args.checkpointing, save_file=args.model_id.replace("/","-") + "-grads-checkpointing.pt")
+optimizer = Optimizer(model, train_loader, tests_loaders, args.numbatches, args.batch_size, valid_size=args.valid_size, warmup_batches=args.warmup_batches, stride=args.stride, group_size=args.group_size,
+                      pca=args.pca, gpus=args.gpus, loglambda=args.log_lambda, bitrate=args.bitrate, max_iters=args.max_iters, checkpointing=args.checkpointing, remarks=args.remarks) #save_file=args.model_id.replace("/","-") + "-quantized")
 
 optimizer.summarize()
 optimizer.transform()
 
-optimizer.validate()
+optimizer.validate(save_best=False)
 optimizer.calibrate()

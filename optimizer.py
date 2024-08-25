@@ -10,7 +10,7 @@ from tqdm import tqdm
 from quantizer import ModuleQ
 
 class Optimizer(Module):
-    def __init__(self, model, train_loader, tests_loaders, batches, batch_size, valid_size=16, stride=1, group_size=-1, warmup_batches=2, pca=384, loglambda=-18, bitrate=3, max_iters=1000, rand_p=0.5, checkpointing=False, gpus=1, load_file=None, save_file=None) -> None:
+    def __init__(self, model, train_loader, tests_loaders, batches, batch_size, valid_size=16, stride=1, group_size=-1, warmup_batches=2, pca=384, loglambda=-18, bitrate=3, max_iters=1000, rand_p=0.5, checkpointing=False, gpus=1, remarks="temp", load_file=None, save_file=None) -> None:
         super().__init__()
         self.model = ModuleQ.create(model, group_size=group_size, checkpointing=checkpointing, gpus=gpus)
         self.loglambda = loglambda
@@ -25,18 +25,18 @@ class Optimizer(Module):
         self.load_file = load_file
         self.save_file = save_file
         self.curr_iter = 0 # -warmup_batches * batch_size
-        self.rand_p = rand_p
         self.max_iters = max_iters # if max_iters is not None else len(self.train_loader)
-        self.best_ppls = [None] * len(tests_loaders)
+        self.best_ppls = [torch.inf] * len(tests_loaders)
         self.pca_index = 0
         self.pca_reset_after = 10
         self.pca_reset_tol = 2e-2
         self.accelerator = Accelerator()
+        self.remarks = remarks
 
-        if self.load_file is None: #
-            return
+        # if self.load_file is None: #
+        #     return
         
-        self.load_vars()
+        # self.load_vars()
 
     def calibrate(self):
         for data in cycle(self.train_loader):
@@ -45,7 +45,6 @@ class Optimizer(Module):
 
             embeds = self.model.embed_tokens(data.to(self.model.device)).requires_grad_(True)
             output = torch.einsum('ij,bkj->bki', self.V, self.model(embeds).logits.to(embeds.dtype)) # - logits.mean(2, keepdim=True))
-            # print(output.float().sum())
 
             self.model.remove_forward_hooks()
 
@@ -65,28 +64,27 @@ class Optimizer(Module):
             # if self.curr_iter >= 0:
             if self.curr_iter % self.batch_size == 0:
                 self.optimize(self.bitrate, regroup=True) #self.curr_iter % 1 * self.batch_size == 0)
+
+                if self.curr_iter % self.valid_size == 0:
+                    self.quantize_all(self.loglambda, grid_search=True) #self.curr_iter > 2 * self.batch_size) #, rand_p=self.rand_p)
+                    self.model.update_offsets()
+                    self.validate()
+
                 self.quantize_all(self.loglambda, grid_search=False) #self.curr_iter > 2 * self.batch_size) #, rand_p=self.rand_p)
                 self.model.update_offsets()
 
-            if self.curr_iter % self.valid_size == 0:
-                self.quantize_all(self.loglambda, grid_search=True) #self.curr_iter > 2 * self.batch_size) #, rand_p=self.rand_p)
-                self.model.update_offsets()
-                self.validate()
-
-
                 # self.quantize_all(self.loglambda) # , rand_p=self.rand_p)
                 # self.model.update_offsets()
-
             gc.collect()
             torch.cuda.empty_cache()
 
             if self.curr_iter >= self.max_iters:
                 break
 
-        if self.save_file is None:
-            return
+        # if self.save_file is None:
+        #     return
             
-        self.save_vars()
+        # self.save_vars()
 
     def optimize(self, bitrate, regroup=False, lr=1.9, iters=10):
         # dual ascent 
@@ -129,7 +127,7 @@ class Optimizer(Module):
 
         self.V = torch.cat([eigenv]).to(embeds.dtype).contiguous()
 
-    def validate(self):
+    def validate(self, save_best=True):
         # loglambda = self.loglambda
         # self.quantize_all(loglambda)
         # self.model.update_offsets()
@@ -151,14 +149,22 @@ class Optimizer(Module):
         lam = self.model.log2lam()
         zer = self.model.numzero()
         print("iterations: %03d, perplexity: %f, %f, lambda: %f, bitrate: %7.4f, numzero: %f" % (self.curr_iter, ppls[0], ppls[1], lam, bit, zer))
-        # breakpoint()
-        # self.reset_on_plateau(ppls)
+
+        if not save_best:
+            return
+
+        self.save_quantized_model(ppls)
+
+    def save_quantized_model(self, ppls):
+        if ppls[0] < self.best_ppls[0]:
+            self.best_ppls[:] = ppls[:]
+            self.model.save_quantized(self.remarks)
 
     def reset_on_plateau(self, ppls):
         if self.curr_iter == 0:
             return
 
-        if self.best_ppls[0] is None or self.best_ppls[0] > ppls[0]:
+        if self.best_ppls[0] > ppls[0]:
             self.best_iter = self.curr_iter
             self.best_ppls[:] = ppls[:]
 

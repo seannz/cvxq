@@ -36,41 +36,37 @@ class LinearQ(Quantizer):
     def __init__(self, linear, group_size=-1, name=None) -> None:
         super().__init__()
         self.linear = linear
+        self.cloned = copy.deepcopy(linear)
+
+        if self.cloned.bias is None:
+            self.cloned.bias = Parameter(torch.zeros_like(linear.weight[:,0]), requires_grad=linear.weight.requires_grad)
+
         self.count_fw = 0
         self.count_bw = 0
-        # self.count_qt = 0
+
         self.groups = groups = max(linear.weight.shape[0] // group_size, 1)
         self.group_size = group_size
         self.name = name
-        # self.dropin = dropin
 
         self.register_buffer('input_av', torch.zeros([1, linear.weight.shape[1]], dtype=linear.weight.dtype))
-
         self.register_buffer('grad_sq0', torch.zeros([linear.weight.shape[0], 1], dtype=linear.weight.dtype))
-        # self.register_buffer('grad_sq1', torch.zeros([1, linear.weight.shape[1]], dtype=linear.bias.dtype))
         self.register_buffer('grad_sq2', torch.zeros([groups, 1, linear.weight.shape[1]], dtype=linear.weight.dtype))
+
         self.register_buffer('groups_2', torch.arange(linear.weight.shape[0]).reshape([groups, -1]))
-
-        # self.register_buffer('grad_sq3', torch.zeros([linear.weight.shape[0], groups, 1], dtype=linear.bias.dtype))
-        # self.register_buffer('groups_3', torch.arange(linear.weight.shape[1]).reshape([groups, -1]))
-
-        self.register_buffer('weight', linear.weight.detach())
-        self.register_buffer('offset', linear.bias.detach() if linear.bias is not None else torch.zeros_like(linear.weight[:,0].detach()))
-        self.register_buffer('mult', torch.zeros([groups, 1, linear.weight.shape[1]], dtype=linear.weight.dtype))
-        self.register_buffer('bias', torch.zeros([groups, 1, linear.weight.shape[1]], dtype=linear.weight.dtype))
-        
-        # self.register_buffer('step_sizep', torch.zeros([groups, 1, linear.weight.shape[1]], dtype=linear.bias.dtype))
-        # self.register_buffer('step_sizem', torch.zeros([groups, 1, linear.weight.shape[1]], dtype=linear.bias.dtype))
-
-        # self.register_buffer('bit_depth1', torch.zeros([groups, 1, linear.weight.shape[1]], dtype=linear.bias.dtype))
         self.register_buffer('bit_depth2', torch.zeros([groups, 1, linear.weight.shape[1]], dtype=linear.weight.dtype))
-        # self.register_buffer('bit_depth3', torch.zeros([linear.weight.shape[0], groups, 1], dtype=linear.bias.dtype))
+
+        # self.register_buffer('weight', linear.weight.detach())
+        # self.register_buffer('offset', linear.bias.detach() if linear.bias is not None else torch.zeros_like(linear.weight[:,0].detach()))
+        # self.register_buffer('mult', torch.zeros([groups, 1, linear.weight.shape[1]], dtype=linear.weight.dtype))
+        # self.register_buffer('bias', torch.zeros([groups, 1, linear.weight.shape[1]], dtype=linear.weight.dtype))
+        # self.register_buffer('best_groups_2', torch.arange(linear.weight.shape[0]).reshape([groups, -1]))
+        # self.register_buffer('best_bit_depth2', torch.zeros([groups, 1, linear.weight.shape[1]], dtype=linear.weight.dtype))
+        
 
     def forward(self, input: Tensor) -> Tensor:
         # breakpoint()
-        output = F.linear(input, self.weight, self.offset)
-
-        return output
+        return self.cloned(input) #F.linear(input, self.weight, self.offset)
+        # return output
 
     def scale_sq(self) -> None:
         self.count_bw += 1
@@ -91,13 +87,10 @@ class LinearQ(Quantizer):
         weight = self.linear.weight[groups] #.float()
         offset = torch.median(weight, 1, keepdim=True).values
         # offset = torch.mean(weight, 1, keepdim=True)
-
         bit_depth = self.bit_depth((weight - offset).float()) #.float()
 
         self.groups_2.copy_(groups.to(self.groups_2.dtype))
-        # self.bit_depth2.copy_(bit_depth.to(self.bit_depth2.dtype))
         self.bit_depth2.copy_(bit_depth.to(self.bit_depth2.dtype))
-        # self.bit_depth2.add_(bit_depth.to(self.bit_depth2.dtype)).multiply_(0.5)
 
     def quantize(self, grid_search=False):
         groups = self.groups_2 #.bit_group()
@@ -144,10 +137,10 @@ class LinearQ(Quantizer):
         quants = quants.floor_().clamp_(None, 2. ** bit_depth - 1).add_(0.5)
         quants = Laplace(offset + bias * 2. ** (step_size + mult), (3/1.414213562) * 2. ** (step_size + mult)).icdf(quants.multiply_(2. **-bit_depth)) #.multiply_(2. **-bit_depth)) # * (1 - 2 * quantiles)))
 
-        self.bias.copy_(bias)
-        self.mult.copy_(mult)
+        # self.bias.copy_(bias)
+        # self.mult.copy_(mult)
 
-        self.weight[groups] = quants.to(self.weight.dtype)
+        self.cloned.weight[groups] = quants.to(self.cloned.weight.dtype)
         # print("best step multiplier: %f" % mult)
         # introduce error randomization
         # if rand_p > 0: #dropout > 0:
@@ -161,7 +154,7 @@ class LinearQ(Quantizer):
         # self.bit_depth2.copy_(bit_depth.to(self.bit_depth2.dtype))
 
     def unquantize(self):
-        self.weight.copy_(self.linear.weight)
+        self.cloned.weight.copy_(self.linear.weight)
 
     def bit_group(self):
         bit_group = torch.var(self.linear.weight.float(), 1, keepdim=True).log2_().add_(self.grad_sq0.float().log2())
@@ -226,8 +219,12 @@ class LinearQ(Quantizer):
             hook.remove()
 
     def update_offsets(self) -> None:
-        # bias =  if self.linear.bias is not None else 0
-        self.offset.copy_((self.linear.bias if self.linear.bias is not None else 0) - ((self.weight - self.linear.weight) @ self.input_av.squeeze()).to(self.linear.weight.dtype)) #.squeeze())
+        bias = self.linear.bias if self.linear.bias is not None else 0
+        self.cloned.bias.copy_(bias - ((self.cloned.weight - self.linear.weight) @ self.input_av.squeeze()).to(self.linear.weight.dtype)) #.squeeze())
+
+    def update_best(self) -> None:
+        self.best_groups_2.copy_(self.groups_2)
+        self.best_bit_depth2.copy_(self.bit_depth2)
 
     def remove_backward_hooks(self) -> None:
         for hook in self.backward_hooks:
@@ -249,7 +246,7 @@ class OPTBlockQ(Module):
         self.block = block
 
     def forward(self, input, attention_mask, *args, **kwargs) -> Tensor:
-        device = self.block.self_attn.q_proj.weight.device
+        device = self.block.self_attn.q_proj.cloned.weight.device
         output = self.block(input.to(device), attention_mask.to(device) if attention_mask is not None else None, *args, **kwargs)
 
         return output
@@ -260,7 +257,7 @@ class LlamaBlockQ(Module):
         self.block = block
 
     def forward(self, input, attention_mask, position_ids, *args, **kwargs) -> Tensor:
-        device = self.block.self_attn.q_proj.weight.device
+        device = self.block.self_attn.q_proj.cloned.weight.device
         output = self.block(input.to(device), attention_mask=attention_mask.to(device) if attention_mask is not None else None,
                             position_ids=position_ids.to(device) if position_ids is not None else None, *args, **kwargs)
         return output
@@ -326,6 +323,10 @@ class ModuleQ(Module):
             self.layers[i][1].log2_lambda = log2_lambda
             self.layers[i][1].optimize(regroup=regroup) # = True
 
+    def update_best_all(self) -> None:
+        for i in range(len(self.layers)):
+            self.layers[i][1].update_best() # = True
+
     def quantize_all(self, log2_lambda, grid_search=False) -> None:
         for i in range(len(self.layers)):
             self.layers[i][1].quantize(grid_search=grid_search) # = True
@@ -366,7 +367,7 @@ class ModuleQ(Module):
 class LlamaQ(ModuleQ):
     def __init__(self, model, group_size=-1, checkpointing=False, gpus=1) -> None:
         super().__init__()
-        self.embed_tokens = model.model.embed_tokens #.requires_grad_(False)
+        self.embed_tokens = model.get_input_embeddings() #.model.embed_tokens #.requires_grad_(False)
         self.embed_dimens = model.config.hidden_size # // groups
         self.group_size = group_size
         self.model = model.eval().requires_grad_(False)
@@ -391,14 +392,33 @@ class LlamaQ(ModuleQ):
             model.model.layers[i].cuda(int(i / len(model.model.layers) * gpus))
         model.model.norm.cuda(gpus - 1)
 
+    def save_quantized(self, save_directory):
+        model = self.model
+        model.lm_head = self.lm_head
+
+        layers = [(n, m) for n, m in model.get_decoder().named_modules() if isinstance(m, LinearQ)]
+        blocks = [(n, m) for n, m in model.get_decoder().named_modules() if isinstance(m, LlamaBlockQ)]
+
+        for layer in layers:
+            setattr(reduce(getattr, layer[0].split('.')[:-1], model.get_decoder()), layer[0].split('.')[-1], layer[1].cloned)
+        for block in blocks:
+            setattr(reduce(getattr, block[0].split('.')[:-1], model.get_decoder()), block[0].split('.')[-1], block[1].block)
+        model.save_pretrained(save_directory)
+
+        for block in blocks:
+            setattr(reduce(getattr, block[0].split('.')[:-1], model.get_decoder()), block[0].split('.')[-1], block[1])
+        for layer in layers:
+            setattr(reduce(getattr, layer[0].split('.')[:-1], model.get_decoder()), layer[0].split('.')[-1], layer[1])
+        model.lm_head = Identity()        
+
 class OPTQ(ModuleQ):
     def __init__(self, model, group_size=-1, checkpointing=False, gpus=1) -> None:
         super().__init__()
-        self.embed_tokens = model.model.decoder.embed_tokens #.requires_grad_(False)
-        self.embed_dimens = model.config.hidden_size # // groups
+        self.embed_tokens = model.get_input_embeddings() # model.model.decoder.embed_tokens
+        self.embed_dimens = model.config.hidden_size
         self.group_size = group_size
         self.model = model.eval().requires_grad_(False)
-        self.lm_head = copy.deepcopy(model.lm_head).cuda(gpus - 1) #.requires_grad_(False)
+        self.lm_head = copy.deepcopy(model.lm_head).cuda(gpus - 1)
         model.lm_head = Identity()
 
         if checkpointing:
@@ -424,4 +444,26 @@ class OPTQ(ModuleQ):
             model.model.decoder.project_out.cuda(gpus - 1)
         if model.model.decoder.final_layer_norm is not None:
             model.model.decoder.final_layer_norm.cuda(gpus - 1)
+
+    def save_quantized(self, save_directory):
+        model = self.model
+        model.lm_head = self.lm_head
+
+        layers = [(n, m) for n, m in model.get_decoder().named_modules() if isinstance(m, LinearQ)]
+        blocks = [(n, m) for n, m in model.get_decoder().named_modules() if isinstance(m, OPTBlockQ)]
+
+        for layer in layers:
+            setattr(reduce(getattr, layer[0].split('.')[:-1], model.get_decoder()), layer[0].split('.')[-1], layer[1].cloned)
+        for block in blocks:
+            setattr(reduce(getattr, block[0].split('.')[:-1], model.get_decoder()), block[0].split('.')[-1], block[1].block)
+        model.save_pretrained(save_directory)
+
+        for block in blocks:
+            setattr(reduce(getattr, block[0].split('.')[:-1], model.get_decoder()), block[0].split('.')[-1], block[1])
+        for layer in layers:
+            setattr(reduce(getattr, layer[0].split('.')[:-1], model.get_decoder()), layer[0].split('.')[-1], layer[1])
+        model.lm_head = Identity()        
+
+
+
 
