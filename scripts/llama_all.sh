@@ -1,7 +1,6 @@
 #!/bin/bash -x
 
 class="meta-llama"
-model="opt-350m"
 group_size=256
 valid_size=64
 stride=128
@@ -11,7 +10,7 @@ gpus=4
 max_iters=256 #1024
 checkpointing="--checkpointing"
 
-for model in Llama-2-70b-hf # opt-350m opt-1.3b opt-2.7b opt-6.7b opt-13b opt-30b #Llama-2-7b-hf #256 # 512 Llama-2-13b-hf # opt-13b # opt-1.3b
+for model in Llama-2-70b-hf Llama-2-13b-hf Llama-2-7b-hf
 do
     for bitrate in 4.0 3.0 #3.0 4.0 # 4.0 # 2.1 2.2 2.4 2.6 2.8 # 3.0 3.2 3.4 3.6 3.8 4.0 #4.0 3.0
     do
