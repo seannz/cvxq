@@ -188,7 +188,7 @@ class LinearQ(Quantizer):
         self.input_av += (1/(self.count_fw)) * (input_av.mean(0, True, dtype=torch.float).subtract_(self.input_av))
 
     def backward_hook(self, module, grad_in, grad_out) -> None:
-        self.grad_out = grad_out[0].detach().squeeze()
+        self.grad_out = grad_out[0].detach().nan_to_num_().squeeze()
         grad_sqr = torch.einsum("ij,ik->jk", self.grad_out, self.layer_in).float().square()
 
         # breakpoint()
@@ -196,11 +196,14 @@ class LinearQ(Quantizer):
         # self.grad_sq1 += (1/self.count_bw) * grad_sqr.mean(0, True, dtype=torch.float)
         self.grad_sq2 += (1/(self.count_bw)) * grad_sqr[self.groups_2].mean(1, True, dtype=torch.float)
 
-        if self.grad_out[0].isnan().any():
+        # replace nan's with the current running averages
+        # self.grad_out.where(self.grad_out.isnan().any(1, keepdim=True), 0)
+
+        if self.grad_out.isnan().any():
             breakpoint()
 
-        if grad_in[0].isnan().any():
-            breakpoint()
+        # if grad_in[0].isnan().any():
+        #     breakpoint()
 
         self.grad_out = None
 
@@ -258,8 +261,8 @@ class LlamaBlockQ(Module):
 
     def forward(self, input, attention_mask, position_ids, *args, **kwargs) -> Tensor:
         device = self.block.self_attn.q_proj.cloned.weight.device
-        output = self.block(input.to(device), attention_mask=attention_mask.to(device) if attention_mask is not None else None,
-                            position_ids=position_ids.to(device) if position_ids is not None else None, *args, **kwargs)
+        output = self.block(input.to(device), attention_mask.to(device) if attention_mask is not None else None,
+                            position_ids.to(device) if position_ids is not None else None, *args, **kwargs)
         return output
 
 class ModuleQ(Module):
