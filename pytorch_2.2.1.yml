@@ -199,4 +199,4 @@ dependencies:
     - xxhash==3.4.1
     - yarl==1.9.4
     - zstandard==0.23.0
-prefix: /space/kale/1/users/siy0/anaconda3/envs/pytorch_2.2.1
+prefix: ~/anaconda3/envs/pytorch_2.2.1
