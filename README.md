@@ -16,7 +16,7 @@ This is the official repo for the paper "LLM Compression with Conve Optimization
 All pre-requisite python packages are listed in `pytorch_2.2.1.yml`. Run `conda env create -f pytorch_2.2.1.yml`.</br>
 
 
-<h2>Quantizing Meta OPT</h2>
+<h2>Quantizing Models</h2>
 
-Run `scripts/opt_all.sh` to quantize OPT models.
-Run `scripts/llama_all.sh` to quantize Llama-2 models.
+Run `scripts/opt_all.sh` to quantize OPT models.</br>
+Run `scripts/llama_all.sh` to quantize Llama-2 models.</br>
