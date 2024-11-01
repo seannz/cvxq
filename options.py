@@ -29,5 +29,4 @@ def parse_args():
     parser.add_argument('--valid_size', dest='valid_size', type=int, default=16)
     parser.add_argument('--max_iters', dest='max_iters', type=int, default=256)
     parser.add_argument('--remarks', dest='remarks', default='temp') #, type=int, default=256)
-    parser.add_argument('--access_token', dest='access_token', default='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')
     return parser.parse_args()
