@@ -9,7 +9,11 @@
 This is the official repo for the paper "LLM Compression with Convex Optimization—Part 1: Weight Quantization".
 
 <br/>
-<img width="783" alt="Screenshot 2024-09-04 at 9 09 48 AM" src="https://github.com/user-attachments/assets/ef9f6f0c-f32d-4f13-a951-36a7a043d974">
+<img width="781" alt="Screenshot 2024-10-31 at 8 12 14 PM" src="https://github.com/user-attachments/assets/53ca4ed4-b4b1-4b6e-b06c-3f1b84990b89">
+<img width="781" alt="Screenshot 2024-10-31 at 8 12 29 PM" src="https://github.com/user-attachments/assets/902dcadd-5fdc-4573-99e8-56bc5f48c22f">
+<img width="781" alt="Screenshot 2024-10-31 at 8 13 05 PM" src="https://github.com/user-attachments/assets/c3346cde-2e9e-40fc-82cf-c158461e0e1b">
+<img width="781" alt="Screenshot 2024-10-31 at 8 13 21 PM" src="https://github.com/user-attachments/assets/73e42292-bcc2-451c-ba10-87d8638e9d9d">
+
 
 <h2>Pre-requisites</h2>
 
