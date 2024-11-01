@@ -6,7 +6,7 @@
 <img width="783" alt="Screenshot 2024-09-04 at 9 15 57 AM" src="https://github.com/user-attachments/assets/6a3385e2-9c43-425d-b9db-914c11c85648">
 </h1>
 
-This is the official repo for the paper "LLM Compression with Convex Optimization—Part 1: Weight Quantization".
+This is the official repo for the paper "Foundations of LLM Compression—Part 1: Weight Quantization".
 
 <br/>
 <img width="781" alt="Screenshot 2024-10-31 at 8 12 14 PM" src="https://github.com/user-attachments/assets/53ca4ed4-b4b1-4b6e-b06c-3f1b84990b89">
