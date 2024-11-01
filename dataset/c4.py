@@ -44,7 +44,7 @@ class C4:
             if enc.input_ids.shape[1] < blocksize:
                 continue
 
-            i = self.random.randint(0, enc.input_ids.shape[1] - blocksize)
+            i = 0 # self.random.randint(0, enc.input_ids.shape[1] - blocksize)
 
             j = i + blocksize # seqlen
             inp = enc.input_ids[:, i:j]
