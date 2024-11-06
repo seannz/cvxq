@@ -9,9 +9,9 @@
 This is the official repo for the paper "Foundations of LLM Compression—Part 1: Weight Quantization".
 
 <br/>
-<img width="781" alt="Screenshot 2024-10-31 at 8 12 14 PM" src="https://github.com/user-attachments/assets/53ca4ed4-b4b1-4b6e-b06c-3f1b84990b89">
-<img width="781" alt="Screenshot 2024-10-31 at 8 13 05 PM" src="https://github.com/user-attachments/assets/c3346cde-2e9e-40fc-82cf-c158461e0e1b">
-<img width="781" alt="Screenshot 2024-10-31 at 8 13 21 PM" src="https://github.com/user-attachments/assets/73e42292-bcc2-451c-ba10-87d8638e9d9d">
+<img width="783" alt="Screenshot 2024-11-05 at 9 46 02 PM" src="https://github.com/user-attachments/assets/d8e93e81-ba51-4cb8-a046-d49c55c606ac">
+<img width="783" alt="Screenshot 2024-11-05 at 9 45 50 PM" src="https://github.com/user-attachments/assets/6c83b8f3-01d2-4aff-932b-e955a1f90f35">
+<img width="783" alt="Screenshot 2024-11-05 at 9 45 31 PM" src="https://github.com/user-attachments/assets/9b6dd284-a04e-45ff-9d7f-9d01c01e7a2c">
 
 
 <h2>Pre-requisites</h2>
