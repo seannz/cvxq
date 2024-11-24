@@ -1,6 +1,6 @@
 <h1> LLM Compression with Convex Optimization—Part 1: Weight Quantization
 
-[![arXiv](https://img.shields.io/badge/arXiv-2312.03102-b31b1b.svg)](https://arxiv.org/abs/2409.02026)
+[![arXiv](https://img.shields.io/badge/arXiv-2312.03102-b31b1b.svg)](https://arxiv.org/abs/)
 [![License:MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 <img width="783" alt="Screenshot 2024-09-04 at 9 15 57 AM" src="https://github.com/user-attachments/assets/6a3385e2-9c43-425d-b9db-914c11c85648">
@@ -21,5 +21,6 @@ All pre-requisite python packages are listed in `pytorch_2.2.1.yml`. Run `conda 
 
 <h2>Quantizing Models</h2>
 
+Run `python setup_cvxq.py` to compile the CVXQ matmul kernel.</br>
 Run `scripts/opt_all.sh` to quantize OPT models.</br>
 Run `scripts/llama_all.sh` to quantize Llama-2 models.</br>
